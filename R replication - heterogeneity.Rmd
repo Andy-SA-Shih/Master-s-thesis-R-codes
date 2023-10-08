@@ -1,0 +1,105 @@
+---
+title: "R replication - heterogeneity"
+author: "Andy Shih"
+date: "2023-10-03"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE, warning=FALSE}
+library(car) # for linearHypothesis
+```
+
+# Interaction terms included (Table 3 and the statistics in the paragraphs)
+```{r}
+# Gender
+
+# subjects' baseline mental health
+model <- lm(wtp ~ t * mental_cond + age + female + westerner + masters + edu_mom_b + edu_dad_b + fin_stress + phq, data = data_completed)
+
+# gender
+model <- lm(wtp ~ t * female + age + female + westerner + masters + edu_mom_b + edu_dad_b + fin_stress + phq, data = data_completed)
+
+# Study country
+model <- lm(wtp ~ t * nl + age + female + westerner + masters + edu_mom_b + edu_dad_b + fin_stress + phq, data = data_completed)
+model_robust <- coeftest(model, vcov = vcovHC(model, type = "HC1"))
+
+# Get the linear combination (just to test the significance of the combination of coefficients)
+library(car)
+linear_combination <- linearHypothesis(model, c("tT:nl + tT = 0"))
+
+# Print the results
+summary(model)
+linear_combination # the linear hypothesis output, which is like storing the regression output to an object
+```
+
+# Heterogeneous treatment effect (Fig. C1-C3)
+```{r}
+# Fit the model
+model <- lm(wtp ~ t * nl + age + female + westerner + masters + edu_mom_b + edu_dad_b + fin_stress + phq, data = data_completed)
+
+# Extract coefficients and confidence intervals for specific linear combinations
+coef_t <- summary(model)$coefficients["tT", c("Estimate", "Std. Error")]
+coef_t_nl <- summary(model)$coefficients["tT:nl", c("Estimate", "Std. Error")]
+
+# Calculate treatment effects for nl == 0 and nl == 1
+treatment_effect_nl0 <- coef_t["Estimate"]
+treatment_effect_nl1 <- coef_t["Estimate"] + coef_t_nl["Estimate"]
+
+se_nl0 <- sqrt(vcovHC(model, type = "HC1")["tT", "tT"])
+se_nl1 <- sqrt((vcovHC(model, type = "HC1")["tT", "tT"] +
+                               vcovHC(model, type = "HC1")["tT:nl", "tT:nl"] +
+                               2 * vcovHC(model, type = "HC1")["tT", "tT:nl"]))
+
+# Calculate confidence intervals
+ci_nl0 <- coef_t["Estimate"] + c(-1, 1) * qt(1 - 0.025, summary(model)$df[2]) * se_nl0
+ci_nl1 <- treatment_effect_nl1 + c(-1, 1) * qt(1 - 0.025, summary(model)$df[2]) * se_nl1
+
+# Create a data frame for plotting
+plot_data <- data.frame(
+  nl = factor(c("Taiwan", "the Netherlands")),
+  treatment_effect = c(treatment_effect_nl0, treatment_effect_nl1),
+  lower_ci = c(ci_nl0[1], ci_nl1[1]),
+  upper_ci = c(ci_nl0[2], ci_nl1[2])
+)
+
+# Plot the results
+ggplot(plot_data, aes(x = nl, y = treatment_effect, ymin = lower_ci, ymax = upper_ci)) +
+  geom_point(position = position_dodge(width = 0.5), size = 3) +
+  geom_errorbar(width = 0.25, position = position_dodge(width = 0.5)) +
+  labs(title = "Treatment Effects with Confidence Intervals",
+       x = "Study Country", y = "Treatment Effect") +
+  theme_minimal()
+```
+
+# An alternative way to build a robust model.
+```{r}
+## However, if I still want to do the linear combination thing like above, it might still be difficult
+# install.packages("estimatr")
+library(estimatr)
+model <- lm_robust(wtp ~ t * nl + age + female + westerner + masters + edu_mom_b + edu_dad_b + fin_stress + phq, data = data_completed, se_type = "HC1")
+# summary(model)
+```
+
+# Study country hetero - blocking (Table C1 \& C2)
+```{r}
+# Loop through nl values 0 and 1
+for (i in 0:1) {
+  # Subset data for each nl value
+  subset <- filter(data_completed, nl == i)
+  
+  # Fit robust regression
+  model <- lm(wtp ~ t + age + female + westerner + masters + edu_mom_b + edu_dad_b + fin_stress + phq, data = subset)
+  robust_model <- coeftest(model, vcov = vcovHC(model, type = "HC1"))
+  
+  
+  # Print results
+  cat("Results for nl =", i, "\n")
+  print(robust_model)
+  cat("\n")
+}
+```
+

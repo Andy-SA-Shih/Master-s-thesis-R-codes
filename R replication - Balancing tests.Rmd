@@ -1,0 +1,171 @@
+---
+title: "R replication of thesis"
+author: "Andy Shih"
+date: "2023-10-01"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Thesis data analysis - balancing test analysis
+# Last modified: 1 Oct, 2023
+# Andy Shih
+
+# Load necessary libraries
+```{r include=FALSE}
+library(openxlsx)
+library(dplyr)
+```
+
+# Import the data
+# Only use data_completed from now on
+```{r echo=FALSEm, results='hide'}
+setwd("/Users/andy/EUR study/masters thesis work/results/data&analysis/analysis/output")
+data_completed <- read.xlsx("/Users/andy/EUR study/masters thesis work/results/data&analysis/analysis/data_completed.xlsx", sheet = "Sheet0", startRow = 1)
+```
+
+```{r}
+# Drop if gender >= 3
+data_completed <- data_completed %>% filter(gender < 3)
+
+# Rename gender to female and change to 0/1
+data_completed$female <- data_completed$gender - 1
+data_completed <- data_completed %>% select(-gender)
+
+# Rename studying_country to nl and change to 0/1
+data_completed$nl <- ifelse(data_completed$studying_country == 1, 1, 0)
+data_completed <- data_completed %>% select(-studying_country)
+
+# Create westerner variable
+data_completed$westerner <- ifelse(data_completed$raised_region >= 2, 1, 0)
+
+# Rename degree to masters and correct Qualtrics' mistake
+data_completed$masters <- ifelse(data_completed$degree == 3, 2, data_completed$degree)
+data_completed$masters <- data_completed$masters-1
+data_completed <- data_completed %>% select(-degree)
+
+# Create fin_stress variable
+data_completed$fin_stress <- ifelse(data_completed$financial <= 2, 1, 0)
+
+# Create edu_mom_b variable
+data_completed <- data_completed %>% mutate(edu_mom_b = case_when(.default = 0,
+                                                                  edu_mom >= 4 & edu_mom <= 6 ~ 1)) # If there is NA in one var, when I wanna mutate a new var based on this var, if I don't specify explicitly like this, R will still treat the obs with NA as NA in new var. 
+
+# Create edu_dad_b variable
+data_completed <- data_completed %>% mutate(edu_dad_b = case_when(.default = 0,
+                                                                  edu_dad >= 4 & edu_dad <= 6 ~ 1)) # same as above
+
+# Create lowMentalHealth variable
+data_completed$lowMentalHealth <- ifelse(data_completed$subjective_wellbeing %in% c(1, 2), 1, 0)
+
+# PHQ score construction: minus one first and sum them up
+phq_vars <- c("phq-1", "phq-2", "phq-3", "phq-4")
+data_completed[phq_vars] <- data_completed[phq_vars] - 1
+data_completed$phq <- data_completed$phq <- rowSums(data_completed[phq_vars], na.rm = TRUE)
+
+# Recode lang and treatment (the encode equivalation in R is as.numeric(as.factor(the cat var)) or use as.numeric(the cat var) directly, but ifelse in this case is easy)
+data_completed$t <- factor(data_completed$treatment)
+data_completed$user_lang <- factor(data_completed$lang)
+```
+
+# Balancing test for completed data (Table 1)
+```{r}
+# It's like local to group all the cat and conti var respectively
+balancing_cat <- c("female", "nl", "westerner", "masters", "edu_mom_b", "edu_dad_b", "lowMentalHealth", "fin_stress", "user_lang")
+balancing_conti <- c("age", "phq")
+```
+
+```{r}
+for (var in balancing_cat) {
+  print(table(data_completed$t, data_completed[[var]]))
+  print(t.test(data_completed[[var]] ~ data_completed$t))
+}
+
+for (var in balancing_conti) {
+  print(summary(data_completed[[var]] ~ data_completed$t, FUN = list(mean = mean, sd = sd)))
+  print(t.test(data_completed[[var]] ~ data_completed$t))
+}
+```
+
+
+# T test for support receiving for each kind of support
+```{r}
+for (i in 1:4) {
+  data_completed$support <- ifelse(data_completed$supportReceiving == i, 1, 0)
+  print(t.test(data_completed$support ~ data_completed$t))
+}
+```
+
+
+# T test for support receiving for Any support
+```{r}
+data_completed$anysupport <- ifelse(data_completed$supportReceiving != 5, 1, 0)
+print(t.test(data_completed$anysupport ~ data_completed$t))
+```
+
+# The same balance test for TW vs. NL samples (Table A3)
+```{r}
+balancing_cat_tw_nl <- c("female", "masters", "edu_mom_b", "edu_dad_b", "lowMentalHealth", "fin_stress")
+balancing_conti_tw_nl <- c("age", "phq")
+
+for (var in balancing_cat_tw_nl) {
+  print(table(data_completed$nl, data_completed[[var]]))
+  print(t.test(data_completed[[var]] ~ data_completed$nl))
+}
+
+for (var in balancing_conti_tw_nl) {
+  print(summaryBy(data_completed[[var]] ~ data_completed$nl, FUN = list(mean = mean, sd = sd)))
+  print(t.test(data_completed[[var]] ~ data_completed$nl))
+}
+
+# T test for support receiving for each kind of support
+for (i in 1:4) {
+  data_completed$support <- ifelse(data_completed$supportReceiving == i, 1, 0)
+  print(t.test(data_completed$support ~ data_completed$nl))
+}
+
+# T test for support receiving for Any support
+data_completed$anysupport <- ifelse(data_completed$supportReceiving != 5, 1, 0)
+print(t.test(data_completed$anysupport ~ data_completed$nl))
+
+```
+
+# To test attrition (Table A2)
+```{r}
+# Attrition
+attrition_count <- sum(data_completed$emailforcontacting == "" & data_completed$enter_lottery != 2)
+cat("Number of people dropped out:", attrition_count, "\n")
+
+# Without control vars
+model_without_controls <- lm(finished ~ t, data = data_completed)
+summary(model_without_controls)
+model_without_controls_r <- coeftest(model_without_controls, vcov. = vcovHC, type = "HC1") # If I assign this coeftest object to a new obj, this panel_PooledOLS_reg_r directly takes the robust SE
+
+stargazer(model_without_controls_r,
+          type = "text",
+          header = F,
+          title = "Attrition test w/o controls")
+
+# Include the Self-reported Mental Health variable instead of PHQ4
+# because most respondents who dropped out did not reach PHQ4 questions
+
+# Controls
+control_vars <- c("age", "female", "nl", "westerner", "masters", 
+                  "edu_mom_b", "edu_dad_b", "lowMentalHealth", "fin_stress")
+
+# With control vars
+model_with_controls <- lm(finished ~ t + age + female + nl + westerner + 
+                           masters + edu_mom_b + edu_dad_b + lowMentalHealth + fin_stress, 
+                         data = data_completed)
+summary(model_with_controls)
+
+model_with_controls_r <- coeftest(model_with_controls_r, vcov. = vcovHC, type = "HC1") 
+
+stargazer(model_with_controls_r,
+          type = "text",
+          header = F,
+          title = "Attrition test w/ controls")
+```
+

@@ -1,0 +1,93 @@
+---
+title: "R replication - robustness"
+author: "Andy Shih"
+date: "2023-10-06"
+output: pdf_document
+---
+
+```{r setup, include=FALSE, error=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Time spent dist and character count dist histogram (Fig E1 and E2)
+```{r}
+library(tidyverse)
+library(estimatr)  # for lm_robust
+library(stringi)   # for handling multi-byte character encodings like Chinese
+
+# Generate 'time_spent' variable
+data_completed <- data_completed %>% mutate(time_spent = t_Timing)
+data_completed$time_spent <- ifelse(is.na(data_completed$time_spent), data_completed$c_Timing, data_completed$time_spent)
+
+# Summarize 'time_spent' for treatment group
+time_spent_summary <- data_completed %>% filter(t == "T") %>% summarise(median_time_spent = median(time_spent, na.rm = TRUE))
+print(time_spent_summary)
+
+# Generate 'serious1' variable
+data_completed <- data_completed %>% mutate(serious1 = ifelse(time_spent >= time_spent_summary$median_time_spent, 1, 0))
+
+
+# Generate 'num_character' variable
+data_completed <- data_completed %>% mutate(num_character = 0)
+
+treatment_lang <- c("t_EN", "t_ZH_T", "c_EN", "c_ZH_T")
+
+for (var in treatment_lang) {
+  data_completed <- data_completed %>%
+    mutate(num_character = ifelse(num_character == 0 | is.na(num_character), stri_length(!!sym(var)), num_character))
+}
+
+data_completed <- data_completed %>%
+  mutate(
+    num_character = ifelse((!is.na(t_ZH_T) & t == "T"), num_character * 2.5, 
+                           ifelse((!is.na(c_ZH_T) & t == "C"), num_character * 2.5, num_character))
+  )
+
+
+# Summarize 'num_character'
+num_character_summary <- data_completed %>% summarise(median_num_character = median(num_character, na.rm = TRUE))
+print(num_character_summary)
+
+# Generate 'serious2' variable
+data_completed <- data_completed %>% mutate(serious2 = ifelse(num_character >= num_character_summary$median_num_character, 1, 0))
+
+# Codebook for 'serious2'
+print(table(data_completed$serious2))
+
+# Linear regression for 'serious1' with robust standard errors
+model1 <- lm_robust(wtp ~ as.factor(serious1) + age + female + nl + westerner + masters + edu_mom_b + edu_dad_b + fin_stress + phq, data = data_completed, subset = (t == "T"), se_type = "HC1")
+
+
+# Linear regression for 'serious1' and 'serious2' with robust standard errors
+model2 <- lm_robust(wtp ~ serious2 + age + female + nl + westerner + masters + edu_mom_b + edu_dad_b + fin_stress + phq, data = data_completed, subset = (t == "T"), se_type = "HC1")
+
+# Correlation between 'serious1' and 'serious2'
+correlation_serious <- cor(data_completed$serious1, data_completed$serious2)
+print(correlation_serious)
+
+# Correlation between 'time_spent' and 'num_character'
+correlation_time_num <- cor(data_completed$time_spent, data_completed$num_character)
+print(correlation_time_num)
+
+
+```
+
+# Fast and slow respondents (Table E.2)
+```{r}
+filtered_data <- data_completed %>%
+  filter(between(duration, 196, 851))
+
+# Define the control variables
+control_vars <- c("age", "female", "nl", "westerner", "masters", "edu_mom_b", "edu_dad_b", "fin_stress", "phq")
+
+# Build the regression formula
+formula <- as.formula(paste("wtp ~ t + duration + ", paste(control_vars, collapse = " + ")))
+
+# Run the regression
+regression_model <- lm_robust(formula, data = filtered_data, se_type = "HC1")
+
+# Display the summary of the regression
+summary(regression_model)
+
+```
+

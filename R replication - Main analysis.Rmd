@@ -1,0 +1,379 @@
+---
+title: "R replication - Main analysis"
+author: "Andy Shih"
+date: "2023-10-01"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r include=FALSE}
+library(openxlsx)
+library(dplyr)
+library(ggplot2)
+library(lmtest)
+library(sandwich)
+library(stargazer)
+```
+
+# Variables transformation
+# Mental Condition
+
+```{r}
+data_completed <- data_completed %>% mutate(mental_cond=case_when(.default = "normal",
+                                                phq>=3 & phq <=5 ~ "mild",
+                                                phq>=6 & phq <=8 ~ "moderate",
+                                                phq>=9 & phq <=12 ~ "severe"))
+```
+
+# Encode mental_condition
+
+```{r}
+data_completed$mental_cond <- factor(data_completed$mental_cond, levels = c("normal", "mild", "moderate", "severe")) # doing this, I converted each level of phq-4 scores to a factor variable. When including it into regressions, R will know it's a cat var, so I don't need to specify it like factor(varname) in the regressions.
+
+# data_completed$mental_condition <- as.numeric(factor(data_completed$mental_cond, levels = c("normal", "mild", "moderate", "severe"))) # doing this is like encoding it into numbers. Tbh, I don't need to do it because R can recognize a factor var already. The reason why I encode and reassign numbers to each mental state in Stata is that the orders Stata automatically generated is kinda messy. 
+```
+
+# Anxiety & Depressiond
+
+```{r}
+data_completed <- data_completed %>% mutate(anxiety=(phq-1+phq-2) >= 3,
+                                            depression=(phq-3+phq-4 >= 3)) # Same as above, there is no need to encode cat var to "numbers" because here they are logical var, if I want, I can convert them into factor var to include in regressions, but it won't affect the regression results here as it's a binary dummy
+```
+
+# Professional Support
+
+```{r}
+# data_completed$pro_support <- as.integer(data_completed$supportReceiving %in% c(1, 2, 3)) # == 1 | == 2 | ==3
+# Label pro_support
+# levels(data_completed$pro_support) <- c("Not Receiving", "Receiving Professional Support") # in this case, though pro_support is a integer, but we manually label the var as 0 is not receiving and 1 is receiving. Only when we levels(data_completed$pro_support) can we see the lables of this var. So I prefer below
+
+data_completed <- data_completed %>% mutate(pro_support = factor(supportReceiving %in% c(1, 2, 3))) # in this case, I create a new var while converting it to a factor var at the same time, but ofc I can specify levels() to manipulate the order. Here, the order is FALSE TRUE
+
+```
+
+# Standardization of Likert scale variables
+
+```{r}
+# Reconstruct the SA index
+data_completed <- data_completed %>% rename(saIndex1 = `sa.Index-1`,
+                                            saIndex2 = `sa.Index-2`,
+                                            saIndex3 = `sa.Index-3`)
+data_completed <- data_completed %>% rename(selfStigmaIndex1 = `selfStigmaIndex-1`,
+                                            selfStigmaIndex2 = `selfStigmaIndex-2`,
+                                            selfStigmaIndex3 = `selfStigmaIndex-3`)
+
+data_completed$saIndex <- rowSums(data_completed[c("saIndex1", "saIndex2", "saIndex3")])
+
+data_completed$selfStigmaIndex <- rowSums(data_completed[c("selfStigmaIndex1", "selfStigmaIndex2", "selfStigmaIndex3")])
+
+likert_vars <- c("saIndex", "selfStigmaIndex", "effectivenessApp", "notSeriousEnough", "socialStigma")
+
+for (var in likert_vars) {
+  control_group <- subset(data_completed, t == "C")
+  new_var_name <- paste0(var, "_n")
+  
+  data_completed[[new_var_name]] <- (data_completed[[var]] - mean(control_group[[var]])) / sd(control_group[[var]])
+}
+
+```
+
+# Descriptive statistics
+# Mean WTP by Treatment (Fig. B1 advanced)
+
+```{r}
+# Calculate means and CIs
+summary_stats <- data_completed %>%
+  group_by(t) %>%
+  summarise(
+    mean_wtp = mean(wtp),
+    ci_lower = mean_wtp - qt(0.975, length(wtp) - 1) * (sd(wtp) / sqrt(length(wtp))),
+    ci_upper = mean_wtp + qt(0.975, length(wtp) - 1) * (sd(wtp) / sqrt(length(wtp)))
+  )
+
+# Create CI plot
+ggplot(summary_stats, aes(x = factor(t), y = mean_wtp, fill = factor(t))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), position = position_dodge(width = 0.8), width = 0.25) +
+  labs(
+    title = "Mean WTP by Treatment Group",
+    x = NULL,  # Set x-axis label to NULL
+    y = "Mean WTP"
+  ) +
+  scale_x_discrete(labels = c("Control", "Treatment")) +  # Set x-axis labels
+  theme_minimal() +
+  theme(legend.position = "none")  # Remove legend
+```
+
+
+# WTP Distribution (Fig. 1)
+
+```{r}
+hist(data_completed$wtp, main = "WTP Distribution", xlab = "WTP", col = "lightblue", border = "black", las = 1) # las = 1 is to make the labels on the Y-axis horizontal.
+
+```
+
+
+# PHQ by Study Country (Fig. 4)
+```{r}
+ggplot(data_completed, aes(x = factor(phq), fill = factor(nl))) +
+  geom_bar(position = "dodge", stat = "count") +
+  labs(title = "PHQ by Study Country", x = "PHQ Level", y = "Frequency") +
+  scale_fill_manual(values = c("lightblue", "lightgreen"), 
+                    name = "Study Country",
+                    labels = c("Taiwan", "The Netherlands")) +
+  theme_minimal() +
+  theme(legend.position = c(0.9, 0.9),  # Set legend to top right (adjusted manually)
+        plot.title = element_text(hjust = 0.5))  # Center the title
+```
+
+# Mechanism and Components Bar Charts (Fig. D1-D11)
+
+```{r include=FALSE}
+## 目前是設定好labels, 但有迴圈的版本我畫不出來，所以我不知道出了什麼問題
+```
+
+```{r}
+likert_vars_all <- c("saIndex1", "saIndex2", "saIndex3", "selfStigmaIndex1", "selfStigmaIndex2", "selfStigmaIndex3",
+                     "effectivenessApp", "notSeriousEnough", "socialStigma")
+
+label_list_saIndex <- list("Definitely not" = 1,
+"Probably not" = 2,
+"Might or might not" = 3,
+"Probably yes" = 4,
+"Definitely yes" = 5)
+
+label_list_effectiveness <- list("Not effective at all" = 1,
+"Slightly effective" = 2,
+"Moderately effective" = 3,
+"Very effective" = 4,
+"Extremely effective" = 5)
+
+label_list_other <- list("Strongly disagree" = 1,
+                         "Somewhat disagree" = 2,
+                         "Neither agree nor disagree" = 3,
+                         "Somewhat agree" = 4,
+                         "Strongly agree" = 5)
+
+# Variables to process
+vars_to_process <- c("saIndex1", "saIndex2", "saIndex3")
+
+# Apply labels to variables
+for (var in vars_to_process) {
+  levels(data_completed[[var]]) <- label_list_saIndex
+}
+
+```
+
+```{r include=FALSE}
+# Calculate percentages and create plots for each likert variable
+for (var in likert_vars_all) {
+  percentage_data <- data_completed %>%
+    ungroup() %>%  # Ungroup the data to avoid issues with summarise
+    group_by(t, data_completed[[var]]) %>%
+    summarise(count = n()) %>%
+    group_by(t) %>%
+    mutate(percentage = (count / sum(count)) * 100)
+
+  # Plotting
+  ggplot(percentage_data, aes(x = as.factor(data_completed[[var]]), y = percentage, fill = factor(t))) +
+    geom_bar(position = "dodge", color = "black", stat = "identity") +
+    labs(title = paste("Distribution of Categories by treatment -", as.character(var)),
+         y = "Percentage",
+         x = "Category") +
+    scale_fill_manual(values = c("#FF9999", "#66B2FF")) +  # Custom colors for Treatment and Control
+    scale_y_continuous(labels = scales::percent_format(scale = 1)) +  # Format y-axis as percentages
+    theme_minimal() +
+    facet_wrap(~var, scales = "free_x")
+}
+```
+
+# saIndex1 as an example
+```{r}
+percentage_data <- data_completed %>%
+    ungroup() %>%  # Ungroup the data to avoid issues with summarise
+    group_by(t, saIndex1) %>%
+    summarise(count = n()) %>%
+    group_by(t) %>%
+    mutate(percentage = (count / sum(count)) * 100)
+
+  # Plotting
+  ggplot(percentage_data, aes(x = as.factor(saIndex1), y = percentage, fill = factor(t))) +
+    geom_bar(position = "dodge", color = "black", stat = "identity", width = 0.5) +
+    labs(title = paste("Distribution of Categories by treatment -", "saIndex1"),
+         y = "Percentage",
+         x = NULL) +
+    scale_fill_manual(values = c("#FF9999", "#66B2FF"), name=NULL, labels = c("Control", "Treatment")) +  # Custom colors for Treatment and Control, and labels = c() to state the name of the labels
+    scale_y_continuous(labels = scales::percent_format(scale = 1)) +  # Format y-axis as percentages
+    theme_minimal() +
+          theme(axis.text.x = element_blank(),  # Remove x-axis text
+          axis.title.x = element_blank(),  # Remove x-axis title
+          axis.ticks.x = element_blank()) +  # Remove x-axis ticks
+    facet_wrap(~saIndex1, scales = "free_x", strip.position = "bottom")
+```
+
+# Correlation between Controls and PHQ-4
+
+```{r}
+controls_phq_corr <- cor(data_completed[, c("age", "female", "nl", "westerner", "masters", "edu_mom_b", "edu_dad_b", "fin_stress", "phq")], use = "pairwise.complete.obs")
+print(controls_phq_corr)
+```
+
+# Correlation between Controls and Professional Support
+
+```{r}
+controls_pro_support_corr <- cor(data_completed[, c("age", "female", "nl", "westerner", "masters", "edu_mom_b", "edu_dad_b", "fin_stress", "pro_support")])
+print(controls_pro_support_corr)
+```
+
+# WTP vs. controls CI plot
+```{r}
+# Assuming `control` is a list of control variables
+control <- c("age", "female", "nl", "westerner", "masters", "edu_mom_b", "edu_dad_b", "fin_stress", "phq")
+
+# Fit the linear regression model
+model <- lm(wtp ~ ., data = data_completed[, c("wtp", control)])
+# model_robust <- coeftest(model, vcov = vcovHC(model, type = "HC1"))
+# Obtain robust standard errors
+robust_se <- sqrt(diag(vcovHC(model, type = "HC1")))
+
+# Create a data frame for coefficients and standard errors
+coefficients_df <- data.frame(
+  Coefficients = coef(model),
+  Robust_SE = robust_se
+)
+
+# Define labels for coefficients
+coeff_labels <- c(
+  age = "Age",
+  female = "Gender",
+  nl = "NL",
+  westerner = "Westerner",
+  masters = "Master's",
+  edu_mom_b = "Mom's Education",
+  edu_dad_b = "Dad's Education",
+  fin_stress = "Financial Stress",
+  phq = "PHQ4"
+)
+
+```
+
+```{r include=FALSE}
+# Use sjPlot to plot coefficients
+# install.packages("sjPlot")
+
+## I tried to do incorporate robust SE, but I failed
+library(sjPlot)
+sjPlot::plot_model(
+  model,
+  type = "est",
+  title = "Regression Coefficients",
+  axis.labels = coeff_labels,
+  axis.lim = c(-1, 1),
+  vcov.fun = function(model) {
+    se <- sqrt(diag(vcovHC(model, type = "HC1")))
+    return(se)
+  },
+  ci.lvl = 95
+) # Change the type according to the explanation/ axis.lim to specify the range of x-axis
+```
+
+```{r}
+sjPlot::plot_model(
+  model,
+  type = "est",
+  title = "Regression Coefficients",
+  axis.labels = coeff_labels,
+  axis.lim = c(-1, 1),
+)
+```
+
+# Other descriptive statistics in Appendix B
+## WTP vs. International students
+```{r}
+# Load the required libraries
+library(dplyr)
+library(ggplot2)
+# library(cowplot) # useful when you need to present multiple visualizations together in a coherent manner, such as in publications or reports.
+
+data_completed <- data_completed %>%
+  mutate(intl = ifelse(westerner != nl, 1, 0))
+
+# Label the 'intl' variable
+data_completed$intl <- factor(data_completed$intl, levels = c(0, 1), labels = c("non-international students", "international students"))
+
+# T-test
+ttest_result <- t.test(wtp ~ intl, data = data_completed)
+
+# Print the t-test result
+print(ttest_result)
+
+# Bar chart
+bar_plot <- ggplot(data_completed, aes(x = intl, y = wtp, fill = intl)) +
+  geom_bar(stat = "summary", fun = "mean") +
+  labs(y = "Mean WTP") +
+    theme_minimal() +
+    theme(legend.position = "none", axis.title.x = element_blank())
+
+
+# Display the bar chart
+print(bar_plot)
+
+```
+
+
+# Multiple Regression for Main Analysis
+
+```{r}
+# Simple t-test
+t_test_result <- t.test(wtp ~ t, data = data_completed)
+print(t_test_result)
+
+# Final model chosen
+control_variables <- c("age", "female", "nl", "westerner", "masters", "edu_mom_b", "edu_dad_b", "fin_stress", "phq")
+
+# print(control_variables[1])
+# Construct the formula
+formula <- as.formula(paste("wtp ~ t +", paste(control_variables, collapse = " + ")))
+
+# Fit the model
+final_model <- lm(formula, data = data_completed, na.action = na.exclude)
+summary(final_model)
+
+# With robust SE added
+final_model_r <- coeftest(final_model, vcov. = vcovHC, type = "HC1") # I need to store the model w/ robust SE to another object to be included in stargazer
+
+stargazer(final_model_r,
+          type = "text",
+          header = F,
+          title = "R replication of the main model")
+
+# Perform the omitted variable test (ovtest)
+# Note: There isn't a direct ovtest function in base R. You might need to use an appropriate package or manually implement the test.
+# Below is an example using the lmtest package.
+resettest(final_model, power=3)
+
+```
+
+# Residual Normality Test
+```{r}
+# Extract residuals
+residuals <- residuals(final_model)
+
+# Create a kernel density plot
+plot_title <- "Kernel Density Plot of Residuals"
+plot_subtitle <- "Normal Distribution"
+density_res <- density(residuals)
+
+# Plot the density
+plot(density_res, main = plot_title, sub = plot_subtitle, xlab = "Residuals", col = "blue")
+
+# Overlay a normal distribution for comparison
+curve(dnorm(x, mean = mean(residuals), sd = sd(residuals)), add = TRUE, col = "red")
+
+# Add legend
+legend("topright", legend = c("Residuals", "Normal Distribution"), col = c("blue", "red"), lty = 1)
+```
+
